@@ -160,13 +160,14 @@ impl FileBasedDeletionSink {
     ) -> CatalogResult<DeletionCheckScanResult> {
         // Call list_files_for_scan — lists all files + collects per-file stats.
         // collect_stat is true by default via SessionConfig::default().
-        let (file_groups, _aggregate_stats) = listing_table
+        let list_result = listing_table
             .list_files_for_scan(&ctx.state(), &[], None)
             .await
             .map_err(|e| CatalogError::InvalidOperation {
                 message: "Failed to list files for retention scan".to_string(),
                 source: Box::new(e),
             })?;
+        let file_groups = list_result.file_groups;
 
         // Find the column index for the retention column
         let col_idx = listing_table
