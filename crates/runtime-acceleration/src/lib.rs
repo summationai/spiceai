@@ -22,7 +22,7 @@ pub use engine::Engine;
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display(
-        "The accelerator engine {name} is not available. Valid engines are arrow, cayenne, duckdb, sqlite, and postgres."
+        "The accelerator engine {name} is not available. Valid engines are arrow, cayenne, duckdb, ducklake, sqlite, and postgres."
     ))]
     AcceleratorEngineNotAvailable { name: String },
 }

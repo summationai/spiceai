@@ -18,6 +18,7 @@ pub enum Engine {
     #[default]
     Arrow,
     DuckDB,
+    DuckLake,
     PartitionedDuckDB,
     TableModePartitionedDuckDB,
     Sqlite,
@@ -44,6 +45,7 @@ impl Display for Engine {
             Engine::DuckDB | Engine::PartitionedDuckDB | Engine::TableModePartitionedDuckDB => {
                 write!(f, "duckdb")
             }
+            Engine::DuckLake => write!(f, "ducklake"),
             Engine::Sqlite => write!(f, "sqlite"),
             Engine::Turso => write!(f, "turso"),
             Engine::PostgreSQL => write!(f, "postgres"),
@@ -59,6 +61,7 @@ impl TryFrom<&str> for Engine {
         match engine.to_lowercase().as_str() {
             "arrow" => Ok(Engine::Arrow),
             "duckdb" => Ok(Engine::DuckDB),
+            "ducklake" => Ok(Engine::DuckLake),
             "sqlite" => Ok(Engine::Sqlite),
             "turso" => Ok(Engine::Turso),
             "postgres" | "postgresql" => Ok(Engine::PostgreSQL),
