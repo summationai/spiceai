@@ -1,0 +1,139 @@
+name: spiced_docker_codebuild
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_project:
+        description: CodeBuild runner project name
+        required: false
+        default: backend-action-runner
+        type: string
+      aws_region:
+        description: AWS region for ECR
+        required: false
+        default: us-west-2
+        type: string
+      ecr_repository:
+        description: ECR repository name
+        required: false
+        default: spiceai-oss
+        type: string
+      image_tag:
+        description: Optional image tag override
+        required: false
+        type: string
+      dockerfile:
+        description: Dockerfile path
+        required: false
+        default: Dockerfile
+        type: string
+      platforms:
+        description: Docker platform list
+        required: false
+        default: linux/amd64
+        type: string
+      cargo_features:
+        description: CARGO_FEATURES build arg
+        required: false
+        default: release,models
+        type: string
+      rust_profile:
+        description: RUST_PROFILE build arg
+        required: false
+        default: release
+        type: string
+  push:
+    branches:
+      - codex/ducklake-accelerator-hosted-endpoint
+    paths:
+      - .github/workflows/spiced_docker_codebuild.yml
+      - Cargo.toml
+      - Cargo.lock
+      - Dockerfile
+      - Dockerfile-release
+      - bin/**
+      - crates/**
+
+jobs:
+  build-and-push:
+    runs-on: codebuild-${{ github.event.inputs.runner_project || 'backend-action-runner' }}-${{ github.run_id }}-${{ github.run_attempt }}
+    permissions:
+      contents: read
+    env:
+      AWS_REGION: ${{ github.event.inputs.aws_region || 'us-west-2' }}
+      ECR_REPOSITORY: ${{ github.event.inputs.ecr_repository || 'spiceai-oss' }}
+      DOCKERFILE_PATH: ${{ github.event.inputs.dockerfile || 'Dockerfile' }}
+      BUILD_PLATFORMS: ${{ github.event.inputs.platforms || 'linux/amd64' }}
+      CARGO_FEATURES: ${{ github.event.inputs.cargo_features || 'release,models' }}
+      RUST_PROFILE: ${{ github.event.inputs.rust_profile || 'release' }}
+      IMAGE_TAG_INPUT: ${{ github.event.inputs.image_tag || '' }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6
+
+      - name: Ensure Docker daemon is available
+        run: |
+          set -euo pipefail
+
+          if docker info >/dev/null 2>&1; then
+            echo "Docker daemon is already running."
+            exit 0
+          fi
+
+          echo "Starting Docker daemon..."
+          if command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl start docker || true
+          fi
+
+          if ! docker info >/dev/null 2>&1; then
+            sudo nohup /usr/bin/dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
+            timeout 60 sh -c "until docker info >/dev/null 2>&1; do sleep 2; done"
+          fi
+
+          sudo chown "${USER}" /var/run/docker.sock || true
+          docker version
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+
+      - name: Resolve image metadata
+        id: meta
+        run: |
+          set -euo pipefail
+
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          ecr_uri="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
+
+          if [ -n "${IMAGE_TAG_INPUT}" ]; then
+            image_tag="${IMAGE_TAG_INPUT}"
+          else
+            short_sha="$(echo "${GITHUB_SHA}" | cut -c1-12)"
+            image_tag="ducklake-${short_sha}"
+          fi
+
+          echo "ecr_uri=${ecr_uri}" >> "${GITHUB_OUTPUT}"
+          echo "image_tag=${image_tag}" >> "${GITHUB_OUTPUT}"
+          echo "image=${ecr_uri}:${image_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Authenticate Docker to ECR
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${{ steps.meta.outputs.ecr_uri }}"
+
+      - name: Build and push image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE_PATH }}
+          platforms: ${{ env.BUILD_PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
+          build-args: |
+            CARGO_FEATURES=${{ env.CARGO_FEATURES }}
+            RUST_PROFILE=${{ env.RUST_PROFILE }}
+
+      - name: Write workflow summary
+        run: |
+          echo "Built and pushed image: ${{ steps.meta.outputs.image }}" >> "${GITHUB_STEP_SUMMARY}"
