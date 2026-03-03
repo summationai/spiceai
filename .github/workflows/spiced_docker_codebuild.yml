@@ -6,7 +6,7 @@ on:
       runner_project:
         description: CodeBuild runner project name
         required: false
-        default: backend-action-runner
+        default: spiceai-build-runner
         type: string
       aws_region:
         description: AWS region for ECR
@@ -56,7 +56,7 @@ on:
 
 jobs:
   build-and-push:
-    runs-on: codebuild-${{ github.event.inputs.runner_project || 'backend-action-runner' }}-${{ github.run_id }}-${{ github.run_attempt }}
+    runs-on: codebuild-${{ github.event.inputs.runner_project || 'spiceai-build-runner' }}-${{ github.run_id }}-${{ github.run_attempt }}
     permissions:
       contents: read
     env:
