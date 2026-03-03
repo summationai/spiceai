@@ -119,6 +119,20 @@ jobs:
           echo "image_tag=${image_tag}" >> "${GITHUB_OUTPUT}"
           echo "image=${ecr_uri}:${image_tag}" >> "${GITHUB_OUTPUT}"
 
+      - name: Rewrite base images to ECR public mirrors
+        run: |
+          set -euo pipefail
+
+          cp "${DOCKERFILE_PATH}" /tmp/Dockerfile.codebuild
+          sed -i \
+            -e 's|FROM rust:${RUST_VERSION}-slim-bookworm as build|FROM public.ecr.aws/docker/library/rust:${RUST_VERSION}-slim-bookworm as build|g' \
+            -e 's|FROM debian:bookworm-slim|FROM public.ecr.aws/docker/library/debian:bookworm-slim|g' \
+            /tmp/Dockerfile.codebuild
+
+          echo "Using Dockerfile for build:"
+          grep '^FROM ' /tmp/Dockerfile.codebuild
+          echo "DOCKERFILE_PATH=/tmp/Dockerfile.codebuild" >> "${GITHUB_ENV}"
+
       - name: Authenticate Docker to ECR
         run: |
           set -euo pipefail
