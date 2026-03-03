@@ -35,7 +35,7 @@ on:
       cargo_features:
         description: CARGO_FEATURES build arg
         required: false
-        default: release,models
+        default: release
         type: string
       rust_profile:
         description: RUST_PROFILE build arg
@@ -64,7 +64,7 @@ jobs:
       ECR_REPOSITORY: ${{ github.event.inputs.ecr_repository || 'spiceai-oss' }}
       DOCKERFILE_PATH: ${{ github.event.inputs.dockerfile || 'Dockerfile' }}
       BUILD_PLATFORMS: ${{ github.event.inputs.platforms || 'linux/amd64' }}
-      CARGO_FEATURES: ${{ github.event.inputs.cargo_features || 'release,models' }}
+      CARGO_FEATURES: ${{ github.event.inputs.cargo_features || 'release' }}
       RUST_PROFILE: ${{ github.event.inputs.rust_profile || 'release' }}
       IMAGE_TAG_INPUT: ${{ github.event.inputs.image_tag || '' }}
     steps:
