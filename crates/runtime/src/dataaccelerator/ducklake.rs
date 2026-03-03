@@ -323,9 +323,18 @@ impl DuckLakeAccelerator {
             .boxed()?;
 
         let create_table_sql = Self::build_create_table_sql(&cmd.name, &cmd.schema);
-        Self::execute_remote_sql(&mut flight_client, &create_table_sql)
-            .await
-            .boxed()?;
+        if let Err(err) = Self::execute_remote_sql(&mut flight_client, &create_table_sql).await {
+            let err_text = err.to_string();
+            // GizmoSQL can execute DDL successfully but still return "Unable to parse command"
+            // when no result stream is produced for the statement.
+            if err_text.contains("Unable to parse command") {
+                tracing::warn!(
+                    "Ignoring DuckLake endpoint parse error for DDL command and continuing: {err_text}"
+                );
+            } else {
+                return Err(Box::new(err));
+            }
+        }
 
         let flight_factory = FlightFactory::new("ducklake", flight_client, new_duckdb_dialect());
 
