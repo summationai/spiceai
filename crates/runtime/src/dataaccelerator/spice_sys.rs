@@ -53,6 +53,7 @@ use super::turso::{Error as TursoError, TursoAccelerator};
 #[cfg(feature = "duckdb")]
 use {
     super::duckdb::{DuckDBAccelerator, Error as DuckDbError},
+    super::ducklake::{DuckLakeAccelerator, Error as DuckLakeError},
     super::partitioned_duckdb::{Error as PartitionedDuckDbError, PartitionedDuckDBAccelerator},
     datafusion_table_providers::sql::db_connection_pool::duckdbpool::DuckDbConnectionPool,
 };
@@ -115,6 +116,18 @@ pub enum Error {
     #[cfg(feature = "duckdb")]
     #[snafu(display("Unable to create DuckDB connection pool: {source}"))]
     DuckDbPool { source: DuckDbError },
+
+    #[cfg(feature = "duckdb")]
+    #[snafu(display("Failed to resolve DuckLake open path: {source}"))]
+    DuckLakeOpenPath { source: DuckLakeError },
+
+    #[cfg(feature = "duckdb")]
+    #[snafu(display("DuckLake open file does not exist at {path}"))]
+    DuckLakeFileMissing { path: String },
+
+    #[cfg(feature = "duckdb")]
+    #[snafu(display("Unable to create DuckLake connection pool: {source}"))]
+    DuckLakePool { source: DuckLakeError },
 
     #[cfg(feature = "duckdb")]
     #[snafu(display("Unable to create Partitioned DuckDB connection pool: {source}"))]
@@ -252,6 +265,42 @@ async fn acceleration_connection(
             Ok(AccelerationConnection::DuckDB(Arc::new(pool)))
         }
         #[cfg(feature = "duckdb")]
+        Engine::DuckLake => {
+            let accelerator = get_registered_accelerator(source, acceleration_settings.engine)
+                .await
+                .context(AcceleratorEngineUnavailableSnafu {
+                    engine: Engine::DuckLake,
+                })?;
+
+            let ducklake_accelerator = accelerator
+                .as_any()
+                .downcast_ref::<DuckLakeAccelerator>()
+                .context(DowncastFailedSnafu {
+                target: "DuckLakeAccelerator",
+            })?;
+
+            if source.is_file_accelerated() {
+                let ducklake_open_path = ducklake_accelerator
+                    .ducklake_open_path(source)
+                    .context(DuckLakeOpenPathSnafu)?;
+                if open_option == OpenOption::OpenExisting
+                    && !Path::new(&ducklake_open_path).exists()
+                {
+                    return DuckLakeFileMissingSnafu {
+                        path: ducklake_open_path,
+                    }
+                    .fail();
+                }
+            }
+
+            let pool = ducklake_accelerator
+                .get_shared_pool(source)
+                .await
+                .context(DuckLakePoolSnafu)?;
+
+            Ok(AccelerationConnection::DuckDB(Arc::new(pool)))
+        }
+        #[cfg(feature = "duckdb")]
         Engine::PartitionedDuckDB => {
             let accelerator = get_registered_accelerator(source, acceleration_settings.engine)
                 .await
@@ -296,9 +345,10 @@ async fn acceleration_connection(
             Ok(AccelerationConnection::DuckDB(pool))
         }
         #[cfg(not(feature = "duckdb"))]
-        Engine::DuckDB | Engine::PartitionedDuckDB | Engine::TableModePartitionedDuckDB => {
-            DuckDbFeatureNotEnabledSnafu.fail()
-        }
+        Engine::DuckDB
+        | Engine::DuckLake
+        | Engine::PartitionedDuckDB
+        | Engine::TableModePartitionedDuckDB => DuckDbFeatureNotEnabledSnafu.fail(),
         #[cfg(feature = "sqlite")]
         Engine::Sqlite => {
             let accelerator = get_registered_accelerator(source, acceleration_settings.engine)

@@ -30,12 +30,17 @@ use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
+use arrow_flight::sql::{
+    CommandStatementIngest, CommandStatementQuery, ProstMessageExt, TableDefinitionOptions,
+    TableExistsOption, TableNotExistOption,
+};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use bytes::Bytes;
 use futures::Stream;
 use futures::StreamExt;
 use futures::{TryStreamExt, ready, stream};
+use prost::Message;
 use secrecy::ExposeSecret;
 use secrecy::SecretString;
 use snafu::prelude::*;
@@ -202,6 +207,26 @@ pub enum Credentials {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatementIngestTarget {
+    pub table: String,
+    pub schema: Option<String>,
+    pub catalog: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatementIngestIfExists {
+    Append,
+    Replace,
+    Fail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatementIngestIfNotExist {
+    Create,
+    Fail,
+}
+
 struct Token {
     value: Arc<SecretString>,
     bearer: bool,
@@ -309,6 +334,55 @@ impl FlightClient {
         self
     }
 
+    fn statement_query_descriptor(sql: Cow<'_, str>) -> FlightDescriptor {
+        let command = CommandStatementQuery {
+            query: sql.into_owned(),
+            transaction_id: None,
+        };
+        let command_bytes = command.as_any().encode_to_vec();
+        FlightDescriptor::new_cmd(command_bytes)
+    }
+
+    fn statement_ingest_descriptor(
+        target: &StatementIngestTarget,
+        if_exists: StatementIngestIfExists,
+        if_not_exist: StatementIngestIfNotExist,
+    ) -> FlightDescriptor {
+        let table_definition_options = TableDefinitionOptions {
+            if_not_exist: match if_not_exist {
+                StatementIngestIfNotExist::Create => {
+                    TableNotExistOption::Create as i32
+                }
+                StatementIngestIfNotExist::Fail => {
+                    TableNotExistOption::Fail as i32
+                }
+            },
+            if_exists: match if_exists {
+                StatementIngestIfExists::Append => {
+                    TableExistsOption::Append as i32
+                }
+                StatementIngestIfExists::Replace => {
+                    TableExistsOption::Replace as i32
+                }
+                StatementIngestIfExists::Fail => {
+                    TableExistsOption::Fail as i32
+                }
+            },
+        };
+
+        let command = CommandStatementIngest {
+            table_definition_options: Some(table_definition_options),
+            table: target.table.clone(),
+            schema: target.schema.clone(),
+            catalog: target.catalog.clone(),
+            temporary: false,
+            transaction_id: None,
+            options: std::collections::HashMap::new(),
+        };
+        let command_bytes = command.as_any().encode_to_vec();
+        FlightDescriptor::new_cmd(command_bytes)
+    }
+
     /// Queries the flight service for the schema of the path.
     ///
     /// # Arguments
@@ -363,7 +437,7 @@ impl FlightClient {
     pub async fn get_query_schema(&self, sql: Cow<'_, str>) -> Result<Schema> {
         let token = self.authenticate_basic_token().await?;
 
-        let descriptor = FlightDescriptor::new_cmd(sql.into_owned());
+        let descriptor = Self::statement_query_descriptor(sql);
         let mut req = descriptor.into_request();
 
         let auth_header_value = match &token {
@@ -405,7 +479,7 @@ impl FlightClient {
     pub async fn query(&self, query: &str) -> Result<FlightRecordBatchStream> {
         let token = self.authenticate_basic_token().await?;
 
-        let descriptor = FlightDescriptor::new_cmd(query.to_string());
+        let descriptor = Self::statement_query_descriptor(Cow::Borrowed(query));
         let mut req = descriptor.into_request();
 
         let auth_header_value = match &token {
@@ -543,9 +617,42 @@ impl FlightClient {
     where
         S: Stream<Item = Result<RecordBatch, ArrowError>> + Send + 'static,
     {
-        let token = self.authenticate_basic_token().await?;
+        self.publish_streaming_with_descriptor(
+            FlightDescriptor::new_path(vec![dataset_path.to_string()]),
+            data_stream,
+        )
+        .await
+    }
 
-        let flight_descriptor = FlightDescriptor::new_path(vec![dataset_path.to_string()]);
+    /// Publishes a stream of data via Flight SQL `CommandStatementIngest`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data cannot be ingested by the Flight SQL server.
+    pub async fn publish_streaming_statement_ingest<S>(
+        &mut self,
+        target: &StatementIngestTarget,
+        if_exists: StatementIngestIfExists,
+        if_not_exist: StatementIngestIfNotExist,
+        data_stream: S,
+    ) -> Result<()>
+    where
+        S: Stream<Item = Result<RecordBatch, ArrowError>> + Send + 'static,
+    {
+        let descriptor = Self::statement_ingest_descriptor(target, if_exists, if_not_exist);
+        self.publish_streaming_with_descriptor(descriptor, data_stream)
+            .await
+    }
+
+    async fn publish_streaming_with_descriptor<S>(
+        &mut self,
+        flight_descriptor: FlightDescriptor,
+        data_stream: S,
+    ) -> Result<()>
+    where
+        S: Stream<Item = Result<RecordBatch, ArrowError>> + Send + 'static,
+    {
+        let token = self.authenticate_basic_token().await?;
 
         let flight_data_stream = FlightDataEncoderBuilder::new()
             .with_flight_descriptor(Some(flight_descriptor))

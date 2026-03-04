@@ -364,7 +364,7 @@ pub enum Error {
     UnsupportedSnapshotTriggerForCaching,
 
     #[snafu(display(
-        "Invalid snapshot configuration: Only DuckDB, Turso and SQlite support snapshots"
+        "Invalid snapshot configuration: Only DuckDB, DuckLake, Turso and SQlite support snapshots"
     ))]
     UnsupportedAccelerationEngineForSnapshots,
 }
@@ -2401,6 +2401,8 @@ async fn build_snapshot_creation_config(
     let acceleration_engine = match acceleration_settings.engine {
         #[cfg(feature = "duckdb")]
         Engine::DuckDB => AccelerationEngine::DuckDB,
+        #[cfg(feature = "duckdb")]
+        Engine::DuckLake => AccelerationEngine::DuckDB,
         #[cfg(feature = "duckdb")]
         Engine::TableModePartitionedDuckDB => AccelerationEngine::DuckDB,
         #[cfg(feature = "sqlite")]

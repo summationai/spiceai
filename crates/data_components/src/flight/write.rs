@@ -29,7 +29,9 @@ use datafusion::{
     sql::TableReference,
 };
 use datafusion_table_providers::util::retriable_error::check_and_mark_retriable_error;
-use flight_client::FlightClient;
+use flight_client::{
+    FlightClient, StatementIngestIfExists, StatementIngestIfNotExist, StatementIngestTarget,
+};
 use futures::StreamExt;
 use snafu::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,11 +43,18 @@ pub enum Error {
     UnableToPublishData { source: flight_client::Error },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlightWriteMode {
+    Path,
+    StatementIngest,
+}
+
 #[derive(Debug)]
 pub struct FlightTableWriter {
     read_provider: Arc<dyn TableProvider>,
     table_reference: TableReference,
     flight_client: FlightClient,
+    write_mode: FlightWriteMode,
 }
 
 impl FlightTableWriter {
@@ -54,10 +63,25 @@ impl FlightTableWriter {
         table_reference: TableReference,
         flight_client: FlightClient,
     ) -> Arc<dyn TableProvider> {
+        Self::create_with_mode(
+            read_provider,
+            table_reference,
+            flight_client,
+            FlightWriteMode::Path,
+        )
+    }
+
+    pub fn create_with_mode(
+        read_provider: Arc<dyn TableProvider>,
+        table_reference: TableReference,
+        flight_client: FlightClient,
+        write_mode: FlightWriteMode,
+    ) -> Arc<dyn TableProvider> {
         Arc::new(Self {
             read_provider,
             table_reference,
             flight_client,
+            write_mode,
         }) as _
     }
 }
@@ -101,6 +125,7 @@ impl TableProvider for FlightTableWriter {
                 self.table_reference.clone(),
                 overwrite,
                 self.schema(),
+                self.write_mode,
             )),
             None,
         )) as _)
@@ -111,8 +136,9 @@ impl TableProvider for FlightTableWriter {
 struct FlightDataSink {
     flight_client: FlightClient,
     table_reference: TableReference,
-    _overwrite: InsertOp,
+    overwrite: InsertOp,
     schema: SchemaRef,
+    write_mode: FlightWriteMode,
 }
 
 #[async_trait]
@@ -154,11 +180,36 @@ impl DataSink for FlightDataSink {
         );
 
         let mut flight_client = self.flight_client.clone();
-        flight_client
-            .publish_streaming(&format!("{}", self.table_reference), data_stream)
-            .await
-            .context(UnableToPublishDataSnafu)
-            .map_err(to_external_error)?;
+        match self.write_mode {
+            FlightWriteMode::Path => {
+                flight_client
+                    .publish_streaming(&format!("{}", self.table_reference), data_stream)
+                    .await
+                    .context(UnableToPublishDataSnafu)
+                    .map_err(to_external_error)?;
+            }
+            FlightWriteMode::StatementIngest => {
+                let target = to_ingest_target(&self.table_reference);
+                let if_exists = match self.overwrite {
+                    // Full refresh in runtime uses InsertOp::Overwrite.
+                    InsertOp::Overwrite => StatementIngestIfExists::Replace,
+                    // InsertOp::Replace semantics require key-aware merge. Until the endpoint
+                    // supports that behavior, keep append semantics to avoid full-table rewrites.
+                    InsertOp::Append | InsertOp::Replace => StatementIngestIfExists::Append,
+                };
+
+                flight_client
+                    .publish_streaming_statement_ingest(
+                        &target,
+                        if_exists,
+                        StatementIngestIfNotExist::Create,
+                        data_stream,
+                    )
+                    .await
+                    .context(UnableToPublishDataSnafu)
+                    .map_err(to_external_error)?;
+            }
+        }
 
         Ok(num_rows.load(Ordering::Relaxed))
     }
@@ -170,12 +221,14 @@ impl FlightDataSink {
         table_reference: TableReference,
         overwrite: InsertOp,
         schema: SchemaRef,
+        write_mode: FlightWriteMode,
     ) -> Self {
         Self {
             flight_client,
             table_reference,
-            _overwrite: overwrite,
+            overwrite,
             schema,
+            write_mode,
         }
     }
 }
@@ -194,4 +247,28 @@ impl DisplayAs for FlightDataSink {
 
 fn to_external_error(e: Error) -> DataFusionError {
     DataFusionError::External(Box::new(e))
+}
+
+fn to_ingest_target(table_reference: &TableReference) -> StatementIngestTarget {
+    match table_reference {
+        TableReference::Bare { table } => StatementIngestTarget {
+            table: table.to_string(),
+            schema: None,
+            catalog: None,
+        },
+        TableReference::Partial { schema, table } => StatementIngestTarget {
+            table: table.to_string(),
+            schema: Some(schema.to_string()),
+            catalog: None,
+        },
+        TableReference::Full {
+            catalog,
+            schema,
+            table,
+        } => StatementIngestTarget {
+            table: table.to_string(),
+            schema: Some(schema.to_string()),
+            catalog: Some(catalog.to_string()),
+        },
+    }
 }
