@@ -30,7 +30,7 @@ use crate::{
 use arrow::datatypes::DataType;
 use arrow_flight::error::FlightError;
 use async_trait::async_trait;
-use data_components::{ReadWrite, flight::FlightFactory};
+use data_components::flight::{FlightTable, write::FlightTableWriter};
 use datafusion::{
     common::DFSchemaRef, datasource::TableProvider, logical_expr::CreateExternalTable,
     sql::TableReference,
@@ -336,12 +336,26 @@ impl DuckLakeAccelerator {
             }
         }
 
-        let flight_factory = FlightFactory::new("ducklake", flight_client, new_duckdb_dialect());
+        // GizmoSQL's Flight endpoint may not implement get_schema/get_query_schema fully.
+        // Build the read provider with the already known CreateExternalTable schema to skip
+        // schema introspection RPCs during initialization.
+        let read_provider = Arc::new(
+            Arc::new(FlightTable::create_with_schema(
+                "ducklake",
+                flight_client.clone(),
+                cmd.name.clone(),
+                Arc::new(cmd.schema.as_arrow().clone()),
+                new_duckdb_dialect(),
+                None,
+            ))
+            .create_federated_table_provider(),
+        );
 
-        ReadWrite::table_provider(&flight_factory, cmd.name.clone())
-            .await
-            .context(UnableToCreateRemoteTableProviderSnafu)
-            .boxed()
+        Ok(FlightTableWriter::create(
+            read_provider,
+            cmd.name.clone(),
+            flight_client,
+        ))
     }
 
     fn with_ducklake_setup_queries(
