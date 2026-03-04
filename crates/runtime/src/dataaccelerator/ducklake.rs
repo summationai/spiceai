@@ -30,7 +30,10 @@ use crate::{
 use arrow::datatypes::DataType;
 use arrow_flight::error::FlightError;
 use async_trait::async_trait;
-use data_components::flight::{FlightTable, write::FlightTableWriter};
+use data_components::flight::{
+    FlightTable,
+    write::{FlightTableWriter, FlightWriteMode},
+};
 use datafusion::{
     common::DFSchemaRef, datasource::TableProvider, logical_expr::CreateExternalTable,
     sql::TableReference,
@@ -351,10 +354,11 @@ impl DuckLakeAccelerator {
             .create_federated_table_provider(),
         );
 
-        Ok(FlightTableWriter::create(
+        Ok(FlightTableWriter::create_with_mode(
             read_provider,
             cmd.name.clone(),
             flight_client,
+            FlightWriteMode::StatementIngest,
         ))
     }
 

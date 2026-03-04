@@ -393,7 +393,21 @@ impl FlightExec {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Self> {
-        let projected_schema = project_schema(schema, projections)?;
+        // DataFusion can request an empty projection (e.g. COUNT(*)).
+        // The remote SQL generator requires at least one projected column.
+        let fallback_projection;
+        let effective_projections = if let Some(projections) = projections {
+            if projections.is_empty() && !schema.fields().is_empty() {
+                fallback_projection = vec![0];
+                Some(&fallback_projection)
+            } else {
+                Some(projections)
+            }
+        } else {
+            None
+        };
+
+        let projected_schema = project_schema(schema, effective_projections)?;
         Ok(Self {
             projected_schema: Arc::clone(&projected_schema),
             table_reference: table_reference.clone(),
