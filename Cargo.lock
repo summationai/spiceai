@@ -7455,6 +7455,7 @@ dependencies = [
  "futures",
  "http 1.4.0",
  "parking_lot 0.12.5",
+ "prost 0.14.3",
  "rustls-native-certs 0.8.3",
  "secrecy",
  "snafu",

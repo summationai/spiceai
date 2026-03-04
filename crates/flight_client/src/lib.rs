@@ -30,12 +30,14 @@ use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
+use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use bytes::Bytes;
 use futures::Stream;
 use futures::StreamExt;
 use futures::{TryStreamExt, ready, stream};
+use prost::Message;
 use secrecy::ExposeSecret;
 use secrecy::SecretString;
 use snafu::prelude::*;
@@ -309,6 +311,15 @@ impl FlightClient {
         self
     }
 
+    fn statement_query_descriptor(sql: Cow<'_, str>) -> FlightDescriptor {
+        let command = CommandStatementQuery {
+            query: sql.into_owned(),
+            transaction_id: None,
+        };
+        let command_bytes = command.as_any().encode_to_vec();
+        FlightDescriptor::new_cmd(command_bytes)
+    }
+
     /// Queries the flight service for the schema of the path.
     ///
     /// # Arguments
@@ -363,7 +374,7 @@ impl FlightClient {
     pub async fn get_query_schema(&self, sql: Cow<'_, str>) -> Result<Schema> {
         let token = self.authenticate_basic_token().await?;
 
-        let descriptor = FlightDescriptor::new_cmd(sql.into_owned());
+        let descriptor = Self::statement_query_descriptor(sql);
         let mut req = descriptor.into_request();
 
         let auth_header_value = match &token {
@@ -405,7 +416,7 @@ impl FlightClient {
     pub async fn query(&self, query: &str) -> Result<FlightRecordBatchStream> {
         let token = self.authenticate_basic_token().await?;
 
-        let descriptor = FlightDescriptor::new_cmd(query.to_string());
+        let descriptor = Self::statement_query_descriptor(Cow::Borrowed(query));
         let mut req = descriptor.into_request();
 
         let auth_header_value = match &token {
